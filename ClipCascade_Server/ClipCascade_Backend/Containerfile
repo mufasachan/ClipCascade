@@ -1,0 +1,115 @@
+# =============================================================
+# Stage 1 — Build
+# maven:3.9-eclipse-temurin-21  (multi-arch: amd64 / arm64 / …)
+# =============================================================
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+WORKDIR /build
+
+# Copy pom.xml first so the dependency-download layer is reused while only src changes
+COPY pom.xml .
+COPY src ./src
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn package -DskipTests -B -q
+
+
+# =============================================================
+# Stage 2 — Runtime
+# eclipse-temurin:21-jre-jammy  (no build tools in the final image)
+# =============================================================
+FROM eclipse-temurin:21-jre-jammy AS runtime
+
+LABEL org.opencontainers.image.title="ClipCascade" \
+      org.opencontainers.image.description="Cross-platform real-time clipboard synchronisation server" \
+      org.opencontainers.image.url="https://github.com/Sathvik-Rao/ClipCascade" \
+      org.opencontainers.image.source="https://github.com/Sathvik-Rao/ClipCascade" \
+      org.opencontainers.image.documentation="https://github.com/Sathvik-Rao/ClipCascade#readme" \
+      org.opencontainers.image.licenses="GPL-3.0-only" \
+      org.opencontainers.image.authors="Sathvik Rao Poladi <sathvik.poladi@gmail.com>" \
+      org.opencontainers.image.vendor="Sathvik-Rao/ClipCascade" \
+      org.opencontainers.image.version="3.1.0"
+
+# wget is used by the HEALTHCHECK below
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN mkdir -p database logs
+
+COPY --from=builder /build/target/*.jar app.jar
+
+# ── Server ────────────────────────────────────────────────────────────────────
+ENV CC_PORT=8080 \
+    CC_SESSION_TIMEOUT=525960m
+
+# ── WebSocket / message size ──────────────────────────────────────────────────
+ENV CC_ALLOWED_ORIGINS="*" \
+    CC_MAX_MESSAGE_SIZE_IN_MiB=1 \
+    CC_MAX_MESSAGE_SIZE_IN_BYTES=0
+
+# ── P2P mode (disabled → uses in-memory STOMP broker) ────────────────────────
+ENV CC_P2P_ENABLED=false \
+    CC_P2P_STUN_URL="stun:stun.l.google.com:19302" \
+    CC_MAX_WS_GLOBAL_CONNECTIONS=-1 \
+    CC_MAX_WS_CONNECTIONS_PER_USER=-1
+
+# ── Database — AES-encrypted H2 file by default; switchable to PostgreSQL ─────
+# CC_SERVER_DB_PASSWORD uses H2 CIPHER=AES format: "<file-password> <user-password>"
+ENV CC_SERVER_DB_URL="jdbc:h2:file:./database/clipcascade;CIPHER=AES;MODE=PostgreSQL" \
+    CC_SERVER_DB_DRIVER=org.h2.Driver \
+    CC_SERVER_DB_USERNAME=clipcascade \
+    CC_SERVER_DB_PASSWORD="QjuGlhE3uwylBBANMkX1 o2MdEoFgbU5XkFvTftky" \
+    CC_SERVER_DB_HIBERNATE_DIALECT=org.hibernate.dialect.H2Dialect
+
+# ── External STOMP broker (disabled by default; enable for ActiveMQ scaling) ──
+ENV CC_EXTERNAL_BROKER_ENABLED=false \
+    CC_BROKER_HOST=localhost \
+    CC_BROKER_PORT=61613 \
+    CC_BROKER_USERNAME=admin \
+    CC_BROKER_PASSWORD=admin
+
+# ── Accounts ──────────────────────────────────────────────────────────────────
+ENV CC_SIGNUP_ENABLED=false \
+    CC_MAX_USER_ACCOUNTS=-1 \
+    CC_ACCOUNT_PURGE_TIMEOUT_SECONDS=-1
+
+# ── Brute-force attack protection ─────────────────────────────────────────────
+ENV CC_MAX_UNIQUE_IP_ATTEMPTS=15 \
+    CC_MAX_ATTEMPTS_PER_IP=30 \
+    CC_LOCK_TIMEOUT_SECONDS=60 \
+    CC_LOCK_TIMEOUT_SCALING_FACTOR=2 \
+    CC_LOG_BRUTE_FORCE_TRACKER_ENABLED=false
+
+# ── BFA Ehcache (allows tracker data to survive restarts) ────────────────────
+ENV CC_BFA_CACHE_ENABLED=false \
+    CC_BFA_TRACKER_CACHE_MAX_JVM_ENTRIES=50 \
+    CC_BFA_TRACKER_CACHE_RAM_PERCENTAGE=0 \
+    CC_BFA_TRACKER_CACHE_DISK_PERCENTAGE=40
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+ENV CC_SERVER_LOGGING_LEVEL=INFO \
+    CC_SERVER_LOG_HISTORY_MAX_DAYS=30 \
+    CC_SERVER_LOG_MAX_CAPACITY=1GB
+
+# ── Miscellaneous ─────────────────────────────────────────────────────────────
+ENV CC_DONATIONS_ENABLED=false
+
+# Default port; override CC_PORT at runtime if changed
+EXPOSE 8080
+
+# Mount these for persistence across container restarts
+VOLUME ["/app/database", "/app/logs"]
+
+# /health returns "OK" (200) — shell form so ${CC_PORT} is expanded at runtime
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget -q --spider "http://localhost:${CC_PORT}/health" || exit 1
+
+# Container-aware heap sizing (75 % of cgroup limit); fast PRNG; OOM-exit
+ENTRYPOINT ["java", \
+    "-XX:+UseContainerSupport", \
+    "-XX:MaxRAMPercentage=75.0", \
+    "-XX:+ExitOnOutOfMemoryError", \
+    "-Djava.security.egd=file:/dev/urandom", \
+    "-jar", "app.jar"]

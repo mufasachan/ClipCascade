@@ -1,5 +1,10 @@
 # <img src="https://github.com/user-attachments/assets/710bb1c3-0eda-48cf-819a-e066bde3a3ec" alt="ClipCascade Logo" width="34" /> ClipCascade
 
+> [!NOTE]
+> This is a fork introducing only a [`ContainerFile`](./ClipCascade_Server/ClipCascade_Backend/Containerfile) for my deployment.
+> 
+> Thanks for the contributors for their works on this project!
+
 **ClipCascade** is a lightweight, open-source utility that automatically syncs your clipboard across multiple devices—no manual input required. It ensures seamless sharing with robust end-to-end encryption, providing a secure and reliable clipboard experience across workstations.
 
 **No Server? No Problem!** Instantly sync your clipboard using the **Live Community Server** at **[clipcascade.sathvik.dev](http://clipcascade.sathvik.dev/)**—**no setup needed**. Just create an account and start sharing your clipboard across devices in seconds!
